@@ -20,7 +20,8 @@ through the standalone preview. Tested playback, model-backed word highlights on
 the original page, pause retaining a word, speed control, saved passages, voice
 selection, focus dimming, Stop cleanup and clicking an original-page heading to
 seek. Browser console inspection found no errors during these checks. Playback
-was muted while testing.
+was muted while testing. A real model worker also handled a terminal interrupt
+without a traceback and then exited through its parent’s normal shutdown path.
 
 A real-model numeric sentence checked that every returned word interval was
 ordered, fell within the WAV duration, and mapped back to its original UTF-16

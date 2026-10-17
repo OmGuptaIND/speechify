@@ -3,12 +3,18 @@
 import base64
 import io
 import os
+import signal
 import time
 from pathlib import Path
 
 from .alignment import align_words, prepare_words
 
 _engine = None
+
+
+def initialize_worker():
+    # The parent owns Control-C and retires the worker through the process pool.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 
 def load_engine(models_dir: str, threads: int = 2):

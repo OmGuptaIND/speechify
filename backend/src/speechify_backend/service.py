@@ -3,7 +3,7 @@ import multiprocessing
 import time
 from concurrent.futures import ProcessPoolExecutor
 
-from .worker import synthesize
+from .worker import initialize_worker, synthesize
 
 
 class BusyError(Exception):
@@ -22,7 +22,9 @@ class SpeechService:
             raise BusyError
         if self.pool is None:
             self.pool = ProcessPoolExecutor(
-                max_workers=1, mp_context=multiprocessing.get_context("spawn")
+                max_workers=1,
+                mp_context=multiprocessing.get_context("spawn"),
+                initializer=initialize_worker,
             )
         self.busy = True
         loop = asyncio.get_running_loop()
