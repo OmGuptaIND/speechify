@@ -1,0 +1,33 @@
+{
+  "name": "speechify-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "node scripts/build.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/test.mjs",
+    "preview": "node scripts/preview.mjs",
+    "check": "npm run format:check && npm run typecheck && npm test && npm run build",
+    "format": "prettier --write src scripts public package.json tsconfig.json",
+    "format:check": "prettier --check src scripts public package.json tsconfig.json"
+  },
+  "dependencies": {
+    "lucide-react": "1.58.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@types/chrome": "0.3.5",
+    "@types/node": "26.6.5",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "esbuild": "0.28.2",
+    "prettier": "3.9.10",
+    "typescript": "7.0.2"
+  }
+}

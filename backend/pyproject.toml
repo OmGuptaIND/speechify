@@ -1,0 +1,33 @@
+[project]
+name = "speechify-backend"
+version = "0.1.0"
+description = "Local Bella speech service for the Speechify browser extension."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.34,<1",
+    "kokoro-onnx==0.6.1",
+    "soundfile>=0.13.1,<0.14",
+]
+
+[project.scripts]
+speechify-backend = "speechify_backend.app:main"
+speechify-download = "speechify_backend.download:main"
+speechify-read = "speechify_backend.cli:entrypoint"
+
+[dependency-groups]
+dev = ["httpx>=0.28,<1", "pytest>=8,<10", "ruff>=0.14,<1"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

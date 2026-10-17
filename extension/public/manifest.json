@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Speechify · Local Reader",
+  "version": "0.1.0",
+  "description": "Read webpages with Bella on your own Mac, with word highlighting and a calm sidebar.",
+  "minimum_chrome_version": "116",
+  "permissions": ["activeTab", "scripting", "sidePanel", "storage", "contextMenus"],
+  "host_permissions": ["http://127.0.0.1:8767/*"],
+  "action": {
+    "default_title": "Read with Bella",
+    "default_icon": { "16": "icons/16.png", "32": "icons/32.png", "128": "icons/128.png" }
+  },
+  "icons": { "16": "icons/16.png", "32": "icons/32.png", "128": "icons/128.png" },
+  "background": { "service_worker": "background.js" },
+  "side_panel": { "default_path": "sidepanel.html" },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; connect-src http://127.0.0.1:8767; media-src 'self' blob:;"
+  }
+}
