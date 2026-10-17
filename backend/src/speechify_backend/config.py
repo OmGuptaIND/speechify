@@ -1,11 +1,14 @@
 import os
 import secrets
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
 
 def project_data() -> Path:
     configured = os.environ.get("SPEECHIFY_DATA_DIR")
+    if not configured and getattr(sys, "frozen", False) and sys.platform == "darwin":
+        return Path.home() / "Library/Application Support/Speechify"
     return (
         Path(configured).expanduser().resolve()
         if configured

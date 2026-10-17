@@ -1,11 +1,18 @@
-import type { Article, Bookmark, HighlightRequest, Preferences } from '../shared';
+import type { Article, Bookmark, HighlightRequest, Preferences, ReaderRequest } from '../shared';
 import { DEFAULTS } from '../shared';
 import { createReader } from './reader';
+import { createInlineControls } from './inline';
 
 const extension = typeof chrome !== 'undefined' && !!chrome.runtime?.id;
 let previewReader: ReturnType<typeof createReader> | undefined;
+let previewControls: ReturnType<typeof createInlineControls> | undefined;
 const seekHandlers = new Set<(id: string, tabId?: number) => void>();
+const refreshHandlers = new Set<(selection: boolean, target?: ReaderRequest) => void>();
+let source: ReaderRequest | undefined;
 export const isPreview = !extension;
+export const isFloating =
+  extension && new URLSearchParams(location.search).get('mode') === 'window';
+export const isPage = extension && new URLSearchParams(location.search).get('mode') === 'page';
 
 export async function preferences(): Promise<Preferences> {
   const value = extension
@@ -41,22 +48,69 @@ export async function resumeFor(url: string): Promise<number> {
     : JSON.parse(localStorage.getItem('speechify-resume') || 'null');
   return value?.url === url ? value.index : 0;
 }
-export async function readPage(selection = false): Promise<Article> {
+export async function readPage(selection = false, target?: ReaderRequest): Promise<Article> {
   if (!extension) {
+    previewControls ||= createInlineControls(document, (targetId) => {
+      refreshHandlers.forEach((fn) =>
+        fn(false, { tabId: 0, windowId: 0, selection: false, targetId, autoplay: true }),
+      );
+    });
     previewReader ||= createReader(
       document,
       (id) => seekHandlers.forEach((fn) => fn(id)),
       document.getElementById('sample-article')!,
+      {
+        targetAt: (element) => previewControls?.targetAt(element),
+        read: (targetId, startSegment) =>
+          refreshHandlers.forEach((fn) =>
+            fn(false, {
+              tabId: 0,
+              windowId: 0,
+              selection: false,
+              targetId,
+              startSegment,
+              autoplay: true,
+            }),
+          ),
+      },
     );
-    return previewReader.collect(selection);
+    previewReader.enable();
+    const chosen = target?.targetId
+      ? previewControls.find(target.targetId)
+      : selection
+        ? undefined
+        : previewControls.defaultTarget();
+    if (!chosen && !selection && previewControls.isFeed())
+      return {
+        title: 'Choose a post to listen',
+        url: location.href,
+        segments: [],
+        kind: 'feed',
+        tabId: 0,
+      };
+    return { ...previewReader.collect(selection, chosen), tabId: 0 };
   }
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab.id || !tab.url || !/^https?:/.test(tab.url))
-    throw new Error('Open an article in a regular website tab, then click the extension icon.');
-  await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
-  const response = await chrome.tabs.sendMessage(tab.id, { type: 'reader:collect', selection });
+  if (target) source = target;
+  if (!source)
+    throw new Error('Open a webpage and click the extension icon to choose what to read.');
+  const tabId = source.tabId;
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (!tab.url || !/^https?:/.test(tab.url))
+      throw new Error('Open a regular webpage, then click the extension icon.');
+    await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+  } catch {
+    throw new Error(
+      'This page is unavailable or restricted. On a regular webpage, click the extension icon again to grant access.',
+    );
+  }
+  const response = await chrome.tabs.sendMessage(tabId, {
+    type: 'reader:collect',
+    selection,
+    targetId: target?.targetId,
+  });
   if (response.error) throw new Error(response.error);
-  return { ...response.article, tabId: tab.id };
+  return { ...response.article, tabId };
 }
 export async function highlight(article: Article, request: HighlightRequest) {
   if (!extension) {
@@ -69,32 +123,72 @@ export async function highlight(article: Article, request: HighlightRequest) {
 export async function clear(article?: Article) {
   if (!extension) {
     previewReader?.clear();
+    previewControls?.status(undefined, 'ready');
     return;
   }
   if (article?.tabId)
     await chrome.tabs.sendMessage(article.tabId, { type: 'reader:clear' }).catch(() => {});
 }
+export async function playbackStatus(article: Article | undefined, phase: string) {
+  if (!extension) {
+    previewControls?.status(article?.targetId, phase);
+    return;
+  }
+  if (extension && article?.tabId !== undefined)
+    await chrome.tabs
+      .sendMessage(article.tabId, { type: 'reader:status', targetId: article.targetId, phase })
+      .catch(() => {});
+}
 export function subscribe(
   seek: (id: string, tabId?: number) => void,
-  refresh: (selection: boolean) => void,
+  refresh: (selection: boolean, target?: ReaderRequest) => void,
 ) {
   seekHandlers.add(seek);
+  refreshHandlers.add(refresh);
   const handler = (
-    message: { type: string; id?: string; selection?: boolean },
+    message: { type: string; id?: string; request?: ReaderRequest; embedded?: boolean },
     sender: chrome.runtime.MessageSender,
   ) => {
     if (message.type === 'reader:seek' && message.id && sender.tab) seek(message.id, sender.tab.id);
-    if (message.type === 'reader:refresh') refresh(!!message.selection);
+    if (
+      message.type === 'reader:refresh' &&
+      message.request &&
+      Boolean(message.embedded) === isPage &&
+      (!isPage ||
+        message.request.tabId === Number(new URLSearchParams(location.search).get('tabId')))
+    )
+      refresh(message.request.selection, message.request);
   };
   if (extension) chrome.runtime.onMessage.addListener(handler);
   return () => {
     seekHandlers.delete(seek);
+    refreshHandlers.delete(refresh);
     if (extension) chrome.runtime.onMessage.removeListener(handler);
   };
 }
-export async function requestedSelection() {
-  if (!extension) return false;
-  const { selectionRequested } = await chrome.storage.session.get('selectionRequested');
-  await chrome.storage.session.remove('selectionRequested');
-  return Boolean(selectionRequested);
+export async function initialRequest(): Promise<ReaderRequest | undefined> {
+  if (!extension) return;
+  const params = new URLSearchParams(location.search);
+  const tabId = Number(params.get('tabId'));
+  const windowId = Number(params.get('windowId'));
+  if (isPage && params.has('tabId') && Number.isInteger(tabId)) {
+    const response = await chrome.tabs.sendMessage(tabId, { type: 'reader:request' });
+    return response?.request || { tabId, windowId, selection: false };
+  }
+  const { readerRequest } = await chrome.storage.session.get('readerRequest');
+  if (readerRequest) return readerRequest as ReaderRequest;
+  if (params.has('tabId') && Number.isInteger(tabId))
+    return { tabId, windowId, selection: params.get('selection') === 'true' };
+}
+export async function showSource(article: Article) {
+  if (!extension || article.tabId === undefined) return;
+  const tab = await chrome.tabs.update(article.tabId, { active: true });
+  if (tab) await chrome.windows.update(tab.windowId, { focused: true });
+}
+
+export function dismissPreview() {
+  if (extension) return;
+  previewReader?.deactivate();
+  previewControls?.destroy();
+  previewControls = undefined;
 }

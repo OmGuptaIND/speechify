@@ -3,18 +3,43 @@
 import base64
 import io
 import os
+import shutil
 import signal
+import tempfile
 import time
+from multiprocessing.util import Finalize
 from pathlib import Path
 
 from .alignment import align_words, prepare_words
 
 _engine = None
+_phoneme_directory = None
+
+
+def phonemizer_config():
+    """Keep eSpeak's data path below its native path-buffer limit after relocation."""
+    global _phoneme_directory
+    import espeakng_loader
+    from kokoro_onnx.config import EspeakConfig
+
+    data = Path(espeakng_loader.get_data_path()).resolve()
+    if len(os.fsencode(data)) > 120:
+        if _phoneme_directory is None:
+            _phoneme_directory = tempfile.TemporaryDirectory(
+                prefix=f"speechify-espeak-{os.getpid()}-", dir="/tmp"
+            )
+            shutil.copytree(data, Path(_phoneme_directory.name) / "espeak-ng-data")
+            # ProcessPool workers use os._exit; register with multiprocessing too.
+            Finalize(None, _phoneme_directory.cleanup, exitpriority=10)
+        data = Path(_phoneme_directory.name) / "espeak-ng-data"
+    return EspeakConfig(data_path=str(data), lib_path=espeakng_loader.get_library_path())
 
 
 def initialize_worker():
-    # The parent owns Control-C and retires the worker through the process pool.
+    # The parent handles shutdown and retires the worker through the pool. A
+    # process-group signal must not bypass the worker's cleanup finalizers.
     signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
 
 
 def load_engine(models_dir: str, threads: int = 2):
@@ -37,7 +62,9 @@ def load_engine(models_dir: str, threads: int = 2):
         sess_options=options,
         providers=["CPUExecutionProvider"],
     )
-    engine = Kokoro.from_session(session, str(model_path / "voices-v1.0.bin"))
+    engine = Kokoro.from_session(
+        session, str(model_path / "voices-v1.0.bin"), espeak_config=phonemizer_config()
+    )
     if not engine.has_timings:
         raise RuntimeError(
             "This model has no timing output. Run speechify-download to install the verified model."

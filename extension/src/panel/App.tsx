@@ -19,10 +19,18 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { DEFAULTS, VOICES, type Article, type Bookmark, type Preferences } from '../shared';
+import {
+  DEFAULTS,
+  VOICES,
+  type Article,
+  type Bookmark,
+  type Preferences,
+  type ReaderRequest,
+} from '../shared';
 import * as api from '../lib/api';
 import * as platform from '../lib/platform';
 import { ReaderPlayer, type PlayerState } from '../lib/player';
+import { RailFrame } from './Rail';
 import './styles.css';
 
 export function App() {
@@ -36,14 +44,18 @@ export function App() {
   const [saved, setSaved] = useState<Bookmark[]>([]);
   const [online, setOnline] = useState(false);
   const [settings, setSettings] = useState(false);
+  const [details, setDetails] = useState(false);
   const [draft, setDraft] = useState('');
   const [error, setError] = useState('');
   const [connecting, setConnecting] = useState(false);
   const [capturing, setCapturing] = useState(false);
   const [trying, setTrying] = useState('');
+  const [dismissed, setDismissed] = useState(false);
   const previewAudio = useRef<HTMLAudioElement | undefined>(undefined);
   const previewAbort = useRef<AbortController | undefined>(undefined);
   const previewURL = useRef('');
+  const captureVersion = useRef(0);
+  const prefsRef = useRef(DEFAULTS);
 
   function stopPreview() {
     previewAudio.current?.pause();
@@ -56,20 +68,50 @@ export function App() {
     setTrying('');
   }
 
-  async function capture(selection = false) {
-    player.stop();
+  async function capture(selection = false, target?: ReaderRequest) {
+    if (
+      target?.autoplay &&
+      !target.startSegment &&
+      target.targetId === articleRef.current?.targetId &&
+      target.tabId === articleRef.current?.tabId
+    ) {
+      stopPreview();
+      if (player.state.phase === 'playing' || player.state.phase === 'preparing') player.pause();
+      else if (prefsRef.current.key)
+        void player.play(player.state.phase === 'finished' ? 0 : player.state.index);
+      else setSettings(true);
+      return;
+    }
+    const version = ++captureVersion.current;
+    stopPreview();
+    player.destroy();
+    articleRef.current = undefined;
+    setArticle(undefined);
     setCapturing(true);
     setError('');
     try {
-      const page = await platform.readPage(selection);
-      const index = await platform.resumeFor(page.url);
+      const page = await platform.readPage(selection, target);
+      const index = target?.startSegment
+        ? Math.max(
+            0,
+            page.segments.findIndex((s) => s.id === target.startSegment),
+          )
+        : target?.autoplay
+          ? 0
+          : await platform.resumeFor(page.url);
+      if (version !== captureVersion.current) return;
       articleRef.current = page;
       setArticle(page);
       player.load(page, index);
+      if (target?.autoplay && page.segments.length) {
+        if (prefsRef.current.key) void player.play(index);
+        else setSettings(true);
+      }
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'This page could not be read.');
+      if (version === captureVersion.current)
+        setError(e instanceof Error ? e.message : 'This page could not be read.');
     } finally {
-      setCapturing(false);
+      if (version === captureVersion.current) setCapturing(false);
     }
   }
   useEffect(() => {
@@ -78,32 +120,48 @@ export function App() {
       ([preferences, marks]) => {
         if (cancelled) return;
         setPrefs(preferences);
+        prefsRef.current = preferences;
         setDraft(preferences.key);
         setSaved(marks);
         player.configure(preferences);
         setReady(true);
-        void platform.requestedSelection().then(capture);
+        const version = captureVersion.current;
+        void platform.initialRequest().then((request) => {
+          if (!cancelled && version === captureVersion.current)
+            void capture(!!request?.selection, request);
+          if (platform.isPage) parent.postMessage({ source: 'speechify-rail', type: 'ready' }, '*');
+        });
       },
     );
     const ping = () => {
-      if (!document.hidden)
-        void api
-          .health()
-          .then((v) => setOnline(v.models_ready))
-          .catch(() => setOnline(false));
+      void api
+        .health()
+        .then((v) => {
+          if (!cancelled) setOnline(v.models_ready);
+        })
+        .catch(() => {
+          if (!cancelled) setOnline(false);
+        });
     };
+    const refreshHealth = () => {
+      if (!document.hidden) ping();
+    };
+    // A sidebar or floating window can mount before the browser marks it visible.
+    // Check once regardless, then refresh immediately when it comes back into view.
     ping();
-    const timer = setInterval(ping, 12000);
+    const timer = setInterval(refreshHealth, 12000);
+    document.addEventListener('visibilitychange', refreshHealth);
     const remove = platform.subscribe(
       (id, tabId) => {
         if (tabId && tabId !== articleRef.current?.tabId) return;
         const index = articleRef.current?.segments.findIndex((s) => s.id === id) ?? -1;
         if (index >= 0) {
+          const wasPlaying = player.state.phase === 'playing' || player.state.phase === 'preparing';
           player.seek(index);
-          void player.play(index);
+          if (!wasPlaying) void player.play(index);
         }
       },
-      (selection) => void capture(selection),
+      (selection, target) => void capture(selection, target),
     );
     const leave = () => {
       player.destroy();
@@ -113,14 +171,19 @@ export function App() {
     return () => {
       cancelled = true;
       clearInterval(timer);
+      document.removeEventListener('visibilitychange', refreshHealth);
       remove();
       window.removeEventListener('pagehide', leave);
       leave();
     };
   }, []);
+  useEffect(() => {
+    void platform.playbackStatus(article, state.phase);
+  }, [article, state.phase]);
   function update(next: Partial<Preferences>) {
     const value = { ...prefs, ...next };
     setPrefs(value);
+    prefsRef.current = value;
     player.configure(value);
     void platform.savePreferences(value);
   }
@@ -142,8 +205,8 @@ export function App() {
   const voice = VOICES.find((v) => v.id === prefs.voice)!;
   const playing = state.phase === 'playing';
   const preparing = state.phase === 'preparing';
-  const canPlay = !!article && !!prefs.key && online;
-  const progress = article
+  const canPlay = !!article?.segments.length && !!prefs.key && online;
+  const progress = article?.segments.length
     ? Math.round(
         ((state.index + (state.word && current ? state.word.end_char / current.text.length : 0)) /
           article.segments.length) *
@@ -216,34 +279,85 @@ export function App() {
     article?.segments.filter(
       (s, i, list) => s.heading && (i === 0 || s.heading !== list[i - 1].heading),
     ) || [];
+  const compact = platform.isPreview || platform.isPage;
+  const sheetOpen = settings || details;
+  const showConnection = settings || (ready && !prefs.key);
+  function collapseControls() {
+    setSettings(false);
+    setDetails(false);
+  }
+  const rates = [0.75, 1, 1.25, 1.5, 1.75, 2, 2.25, 2.5];
+  const rateLabel = `${Number((Math.round(prefs.rate * 100) / 100).toFixed(2))}×`;
+  function dismissRail() {
+    if (playing || preparing) player.pause();
+    stopPreview();
+    setSettings(false);
+    setDetails(false);
+    if (platform.isPage) parent.postMessage({ source: 'speechify-rail', type: 'close' }, '*');
+    else {
+      platform.dismissPreview();
+      setDismissed(true);
+    }
+  }
   return (
-    <div className="reader-app" data-speechify-ui>
+    <RailFrame
+      compact={compact}
+      dismissed={dismissed}
+      open={sheetOpen}
+      feed={article?.kind === 'feed'}
+      playing={playing}
+      preparing={preparing}
+      canPlay={canPlay}
+      rate={rateLabel}
+      error={error || state.error}
+      hint={
+        ready && !prefs.key
+          ? 'Connect in settings.'
+          : !online
+            ? 'Open Speechify on your Mac.'
+            : article?.kind === 'feed'
+              ? 'Choose a post.'
+              : undefined
+      }
+      onToggle={() => {
+        stopPreview();
+        if (playing || preparing) player.pause();
+        else void player.play(state.phase === 'finished' ? 0 : state.index);
+      }}
+      onRate={() => {
+        const index = rates.findIndex((rate) => Math.abs(rate - prefs.rate) < 0.01);
+        update({ rate: rates[(index + 1) % rates.length] });
+      }}
+      onDetails={() => {
+        setDetails(!sheetOpen);
+        setSettings(false);
+      }}
+      onCollapse={collapseControls}
+      onSettings={() => {
+        setSettings(!settings);
+        setDetails(false);
+        setError('');
+      }}
+      onClose={dismissRail}
+      onReopen={() => {
+        setDismissed(false);
+        void capture();
+      }}
+    >
       <header className="app-header">
         <div className="wordmark">
           <span className="brand-mark">
             <AudioLines size={21} />
           </span>
-          <div>
-            Speechify<small>YOUR LOCAL READER</small>
-          </div>
+          <div>Speechify</div>
         </div>
-        <button
-          className="icon-button"
-          aria-label="Reader settings"
-          onClick={() => {
-            setSettings(!settings);
-            setError('');
-          }}
-        >
-          <Settings size={19} />
-        </button>
+        {compact && (
+          <button className="icon-button" aria-label="Close controls" onClick={collapseControls}>
+            <X size={18} />
+          </button>
+        )}
       </header>
-      <div className="connection-status">
-        <span className={online ? 'status-dot online' : 'status-dot'} />
-        {online ? 'On your Mac' : 'Reader offline'}
-        {platform.isPreview && <span className="preview-badge">Preview</span>}
-      </div>
-      <nav className="tabs" aria-label="Reader sections">
+      <nav className="tabs" aria-label="Reader sections" hidden={showConnection}>
         {(['listen', 'voices', 'saved'] as const).map((value) => (
           <button
             key={value}
@@ -251,16 +365,23 @@ export function App() {
             aria-pressed={tab === value}
             onClick={() => setTab(value)}
           >
+            {value === 'listen' ? (
+              <Headphones size={15} />
+            ) : value === 'voices' ? (
+              <AudioLines size={15} />
+            ) : (
+              <BookmarkIcon size={15} />
+            )}
             {value === 'listen' ? 'Listen' : value === 'voices' ? 'Voices' : 'Saved'}
           </button>
         ))}
       </nav>
       <main className="panel-content">
-        {(settings || (ready && !prefs.key)) && (
+        {showConnection && (
           <section className="connection-card" aria-label="Connect local reader">
             <div className="card-heading">
               <Headphones size={20} />
-              <h2>Connect to this Mac</h2>
+              <h2>Connect to your Mac</h2>
               {prefs.key && (
                 <button
                   className="icon-button small"
@@ -271,10 +392,7 @@ export function App() {
                 </button>
               )}
             </div>
-            <p>
-              Start the local reader, then paste the connection key shown in its Terminal window.
-              You only need to do this once.
-            </p>
+            <p>Open Speechify on your Mac and paste your connection key.</p>
             <label className="field-label" htmlFor="connection-key">
               Connection key
             </label>
@@ -292,7 +410,7 @@ export function App() {
               onClick={() => void pair()}
             >
               {connecting ? <LoaderCircle size={17} className="spin" /> : <Check size={17} />}{' '}
-              {connecting ? 'Connecting…' : 'Connect reader'}
+              {connecting ? 'Connecting…' : 'Connect'}
             </button>
           </section>
         )}
@@ -302,173 +420,208 @@ export function App() {
             <span>{error || state.error}</span>
           </div>
         )}
-        {tab === 'listen' && (
+        {!showConnection && tab === 'listen' && (
           <>
-            <section className="page-context">
-              <div className="eyebrow">
-                ON THIS PAGE
+            {article?.segments.length ? (
+              <div className="listening-section">
+                <section className="page-context">
+                  <div className="eyebrow">
+                    Now reading
+                    <button
+                      className="icon-button small"
+                      aria-label="Read current page"
+                      disabled={capturing}
+                      onClick={() => void capture()}
+                    >
+                      <RefreshCw size={14} className={capturing ? 'spin' : ''} />
+                    </button>
+                  </div>
+                  <h1>{article?.title || 'Choose text'}</h1>
+                  <div className="source-name">
+                    {article ? new URL(article.url).hostname : 'Open a page to start.'}
+                  </div>
+                  {platform.isFloating && article && (
+                    <button
+                      className="text-button"
+                      onClick={() =>
+                        void platform
+                          .showSource(article)
+                          .catch(() =>
+                            setError(
+                              'The original tab was closed. Click the extension icon on another page.',
+                            ),
+                          )
+                      }
+                    >
+                      Show page <ArrowRight size={13} />
+                    </button>
+                  )}
+                </section>
+                {current && (
+                  <section className="passage" aria-label="Current passage">
+                    <div className="passage-label">
+                      {preparing ? 'LOADING' : playing ? 'PLAYING' : 'PASSAGE'}
+                    </div>
+                    <p>
+                      {state.word ? (
+                        <>
+                          {current.text.slice(0, state.word.start_char)}
+                          <mark>
+                            {current.text.slice(state.word.start_char, state.word.end_char)}
+                          </mark>
+                          {current.text.slice(state.word.end_char)}
+                        </>
+                      ) : (
+                        current.text
+                      )}
+                    </p>
+                  </section>
+                )}
+                <div className="playback-controls">
+                  <button
+                    className="icon-button skip"
+                    aria-label="Previous paragraph"
+                    disabled={!article || state.index === 0}
+                    onClick={() => jump(-1)}
+                  >
+                    <SkipBack size={20} />
+                  </button>
+                  <button
+                    className="play-button"
+                    aria-label={playing || preparing ? 'Pause reading' : 'Play reading'}
+                    disabled={!canPlay}
+                    onClick={() => {
+                      stopPreview();
+                      if (playing || preparing) player.pause();
+                      else void player.play(state.phase === 'finished' ? 0 : state.index);
+                    }}
+                  >
+                    {preparing ? (
+                      <LoaderCircle className="spin" size={24} />
+                    ) : playing ? (
+                      <Pause size={24} fill="currentColor" />
+                    ) : (
+                      <Play size={24} fill="currentColor" />
+                    )}
+                  </button>
+                  <button
+                    className="icon-button skip"
+                    aria-label="Next paragraph"
+                    disabled={!article || state.index >= article.segments.length - 1}
+                    onClick={() => jump(1)}
+                  >
+                    <SkipForward size={20} />
+                  </button>
+                </div>
+                <div className="reading-status" aria-live="polite">
+                  {preparing
+                    ? 'Loading…'
+                    : playing
+                      ? 'Playing'
+                      : state.phase === 'finished'
+                        ? 'Finished'
+                        : state.phase === 'paused'
+                          ? 'Paused'
+                          : 'Ready'}
+                </div>
+                <div className="position">
+                  <label htmlFor="reading-position">
+                    {article?.segments.length
+                      ? `Section ${state.index + 1} of ${article.segments.length}`
+                      : 'Choose a passage to begin'}
+                  </label>
+                  <span>{progress}%</span>
+                  <input
+                    id="reading-position"
+                    type="range"
+                    min="0"
+                    max={Math.max(1, (article?.segments.length || 1) - 1)}
+                    value={state.index}
+                    disabled={!article?.segments.length}
+                    onChange={(e) => player.seek(Number(e.target.value))}
+                  />
+                </div>
+              </div>
+            ) : (
+              <div className="reading-empty">
+                <Headphones size={20} />
+                <div>
+                  <h1>
+                    {article?.kind === 'feed' ? 'Choose a post to listen' : 'Choose text to listen'}
+                  </h1>
+                  <p>
+                    {article?.kind === 'feed'
+                      ? 'Press play beside a post on the page.'
+                      : 'Open a page or select a passage.'}
+                  </p>
+                </div>
+              </div>
+            )}
+            <div className="listening-preferences">
+              <button className="voice-row" onClick={() => setTab('voices')}>
+                <span className="voice-avatar">{voice.initial}</span>
+                <span>
+                  <strong>{voice.name}</strong>
+                  <small>American English</small>
+                </span>
+                <span className="change-label">Change</span>
+                <ChevronRight size={16} />
+              </button>
+              <div className="speed-control">
+                <label htmlFor="listening-speed">Speed</label>
+                <span className="speed-value">{prefs.rate}×</span>
+                <input
+                  id="listening-speed"
+                  type="range"
+                  min="0.75"
+                  max="2.5"
+                  step="0.25"
+                  value={prefs.rate}
+                  onChange={(e) => update({ rate: Number(e.target.value) })}
+                />
+                <div className="speed-labels">
+                  <span>0.75×</span>
+                  <span>2.5×</span>
+                </div>
+              </div>
+              <label className="toggle-row">
+                <span>Auto-scroll</span>
+                <input
+                  type="checkbox"
+                  role="switch"
+                  checked={prefs.follow}
+                  onChange={(e) => update({ follow: e.target.checked })}
+                />
+              </label>
+              <label className="toggle-row">
+                <span>Dim other text</span>
+                <input
+                  type="checkbox"
+                  role="switch"
+                  checked={prefs.focus}
+                  onChange={(e) => update({ focus: e.target.checked })}
+                />
+              </label>
+            </div>
+            {!!current && (
+              <div className="secondary-actions">
                 <button
-                  className="icon-button small"
-                  aria-label="Read current page"
-                  disabled={capturing}
-                  onClick={() => void capture()}
+                  className="subtle-button"
+                  disabled={!current || savedHere}
+                  onClick={savePassage}
                 >
-                  <RefreshCw size={14} className={capturing ? 'spin' : ''} />
+                  <BookmarkIcon size={16} fill={savedHere ? 'currentColor' : 'none'} />
+                  {savedHere ? 'Saved' : 'Save'}
+                </button>
+                <button
+                  className="icon-button"
+                  aria-label="Stop reading and clear highlights"
+                  onClick={() => player.stop()}
+                >
+                  <Square size={15} />
                 </button>
               </div>
-              <h1>{article?.title || 'Something good to read.'}</h1>
-              <div className="source-name">
-                {article
-                  ? new URL(article.url).hostname
-                  : 'Open an article, then click the extension icon.'}
-              </div>
-            </section>
-            {current && (
-              <section className="passage" aria-label="Current passage">
-                <div className="passage-label">
-                  {preparing
-                    ? 'PREPARING YOUR NEXT WORDS'
-                    : playing
-                      ? 'READING WITH YOU'
-                      : 'YOUR PLACE IS KEPT'}
-                </div>
-                <p>
-                  {state.word ? (
-                    <>
-                      {current.text.slice(0, state.word.start_char)}
-                      <mark>{current.text.slice(state.word.start_char, state.word.end_char)}</mark>
-                      {current.text.slice(state.word.end_char)}
-                    </>
-                  ) : (
-                    current.text
-                  )}
-                </p>
-              </section>
             )}
-            <div className="playback-controls">
-              <button
-                className="icon-button skip"
-                aria-label="Previous paragraph"
-                disabled={!article || state.index === 0}
-                onClick={() => jump(-1)}
-              >
-                <SkipBack size={20} />
-              </button>
-              <button
-                className="play-button"
-                aria-label={playing || preparing ? 'Pause reading' : 'Play reading'}
-                disabled={!canPlay}
-                onClick={() => {
-                  stopPreview();
-                  if (playing || preparing) player.pause();
-                  else void player.play(state.phase === 'finished' ? 0 : state.index);
-                }}
-              >
-                {preparing ? (
-                  <LoaderCircle className="spin" size={24} />
-                ) : playing ? (
-                  <Pause size={24} fill="currentColor" />
-                ) : (
-                  <Play size={24} fill="currentColor" />
-                )}
-              </button>
-              <button
-                className="icon-button skip"
-                aria-label="Next paragraph"
-                disabled={!article || state.index >= article.segments.length - 1}
-                onClick={() => jump(1)}
-              >
-                <SkipForward size={20} />
-              </button>
-            </div>
-            <div className="reading-status" aria-live="polite">
-              {preparing
-                ? 'Bella is getting this passage ready…'
-                : playing
-                  ? 'A little easier, one passage at a time.'
-                  : state.phase === 'finished'
-                    ? 'You’ve reached the end.'
-                    : state.phase === 'paused'
-                      ? 'Paused. Pick up whenever you’re ready.'
-                      : 'Ready when you are.'}
-            </div>
-            <div className="position">
-              <label htmlFor="reading-position">
-                {article
-                  ? `Section ${state.index + 1} of ${article.segments.length}`
-                  : 'Reading position'}
-              </label>
-              <span>{progress}%</span>
-              <input
-                id="reading-position"
-                type="range"
-                min="0"
-                max={Math.max(1, (article?.segments.length || 1) - 1)}
-                value={state.index}
-                disabled={!article}
-                onChange={(e) => player.seek(Number(e.target.value))}
-              />
-            </div>
-            <div className="divider" />
-            <button className="voice-row" onClick={() => setTab('voices')}>
-              <span className="voice-avatar">{voice.initial}</span>
-              <span>
-                <strong>{voice.name}</strong>
-                <small>American English</small>
-              </span>
-              <span className="change-label">Change</span>
-              <ChevronRight size={16} />
-            </button>
-            <div className="speed-control">
-              <label htmlFor="listening-speed">Listening speed</label>
-              <span className="speed-value">{prefs.rate}×</span>
-              <input
-                id="listening-speed"
-                type="range"
-                min="0.75"
-                max="2.5"
-                step="0.25"
-                value={prefs.rate}
-                onChange={(e) => update({ rate: Number(e.target.value) })}
-              />
-              <div className="speed-labels">
-                <span>Take it slowly</span>
-                <span>Move a little faster</span>
-              </div>
-            </div>
-            <label className="toggle-row">
-              <span>Follow the words on the page</span>
-              <input
-                type="checkbox"
-                checked={prefs.follow}
-                onChange={(e) => update({ follow: e.target.checked })}
-              />
-            </label>
-            <label className="toggle-row">
-              <span>Dim surrounding paragraphs</span>
-              <input
-                type="checkbox"
-                checked={prefs.focus}
-                onChange={(e) => update({ focus: e.target.checked })}
-              />
-            </label>
-            <div className="secondary-actions">
-              <button
-                className="subtle-button"
-                disabled={!current || savedHere}
-                onClick={savePassage}
-              >
-                <BookmarkIcon size={16} fill={savedHere ? 'currentColor' : 'none'} />
-                {savedHere ? 'Passage saved' : 'Save this passage'}
-              </button>
-              <button
-                className="icon-button"
-                aria-label="Stop reading and clear highlights"
-                onClick={() => player.stop()}
-              >
-                <Square size={15} />
-              </button>
-            </div>
             {!!headings.length && (
               <details className="outline">
                 <summary>On this page</summary>
@@ -485,15 +638,14 @@ export function App() {
               disabled={capturing}
               onClick={() => void capture(true)}
             >
-              Read selected text instead
+              Read selection
             </button>
           </>
         )}
-        {tab === 'voices' && (
+        {!showConnection && tab === 'voices' && (
           <section className="voices-panel">
             <div className="section-intro">
-              <h1>A voice you feel at home with.</h1>
-              <p>Choose your everyday reading companion.</p>
+              <h1>Choose your voice</h1>
             </div>
             {VOICES.map((item) => (
               <div
@@ -516,9 +668,7 @@ export function App() {
                   {prefs.voice === item.id && <Check className="selected-check" size={18} />}
                 </button>
                 <div className="voice-choice-bottom">
-                  <span>
-                    {prefs.voice === item.id ? 'Your everyday voice' : 'Available on your Mac'}
-                  </span>
+                  <span>{prefs.voice === item.id ? 'Selected' : 'English'}</span>
                   <button
                     className="text-button"
                     aria-label={
@@ -543,17 +693,16 @@ export function App() {
             </button>
           </section>
         )}
-        {tab === 'saved' && (
+        {!showConnection && tab === 'saved' && (
           <section className="saved-panel">
             <div className="section-intro">
-              <h1>A place to come back to.</h1>
-              <p>Your saved passages stay on this device.</p>
+              <h1>Saved passages</h1>
             </div>
             {!saved.length ? (
               <div className="empty-saved">
                 <BookmarkIcon size={31} />
-                <h2>Keep a thought for later.</h2>
-                <p>Save a passage while you listen. It will be waiting here.</p>
+                <h2>No saved passages</h2>
+                <p>Save a passage while listening to return to it here.</p>
               </div>
             ) : (
               saved.map((item, i) => (
@@ -596,12 +745,22 @@ export function App() {
           </section>
         )}
       </main>
-      <footer className="app-footer">
-        <span className="footer-mark">
-          <AudioLines size={13} />
-        </span>{' '}
-        Your words. Your voice. On your Mac.
+      <footer className="panel-footer">
+        <button
+          className="connection-button"
+          aria-label="Reader settings"
+          aria-expanded={showConnection}
+          onClick={() => {
+            setSettings(!settings);
+            setError('');
+          }}
+        >
+          <span className={online && prefs.key ? 'status-dot online' : 'status-dot'} />
+          <span>{online && prefs.key ? 'Connected to your Mac' : 'Connect to your Mac'}</span>
+          <Settings size={14} />
+        </button>
+        {platform.isPreview && <span className="preview-badge">Preview</span>}
       </footer>
-    </div>
+    </RailFrame>
   );
 }

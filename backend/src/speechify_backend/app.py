@@ -9,7 +9,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from .companion import companion_router
 from .config import Settings, connection_key
+from .runtime import backend_lock
 from .schemas import SpeechRequest, SpeechResponse
 from .service import BusyError, SpeechService
 
@@ -73,7 +75,9 @@ def create_app(settings=None, service=None, key=None):
     def authorize(authorization: str = Header(default="")):
         supplied = authorization.removeprefix("Bearer ")
         if not hmac.compare_digest(supplied.encode(), key.encode()):
-            raise HTTPException(401, "Connect using the key shown in the reader's Terminal window.")
+            raise HTTPException(401, "Connect using this Mac's Speechify connection key.")
+
+    app.include_router(companion_router(authorize))
 
     @app.get("/", response_class=HTMLResponse)
     def home():
@@ -82,6 +86,7 @@ def create_app(settings=None, service=None, key=None):
     @app.get("/v1/health")
     def health():
         return {
+            "app": "speechify-local-reader",
             "status": "ok",
             "models_ready": settings.models_ready,
             "worker_loaded": service.pool is not None,
@@ -100,7 +105,9 @@ def create_app(settings=None, service=None, key=None):
     @app.post("/v1/speech", response_model=SpeechResponse, dependencies=[Depends(authorize)])
     async def speech(request: SpeechRequest):
         if not settings.models_ready:
-            raise HTTPException(503, "The voice model is missing. Run scripts/setup.command.")
+            raise HTTPException(
+                503, "The voice files are missing. Open Speechify and choose Prepare this Mac."
+            )
         try:
             return await service.speak(request)
         except BusyError:
@@ -126,18 +133,32 @@ def main():
     parser.add_argument(
         "--preview", action="store_true", help="Also allow the local UI preview on port 8768."
     )
+    parser.add_argument(
+        "--quiet-key", action="store_true", help="Keep the pairing key out of background logs."
+    )
+    parser.add_argument("--port", type=int, default=8767, help="Loopback port (default: 8767).")
     args = parser.parse_args()
-    settings = Settings(preview=args.preview)
+    if not 1 <= args.port <= 65535:
+        parser.error("The port must be between 1 and 65535.")
+    settings = Settings(preview=args.preview, port=args.port)
     key = connection_key(settings)
     print(f"\nSpeechify is local to this Mac · http://127.0.0.1:{settings.port}")
-    print("Paste this connection key into the extension once:")
-    print(f"\n{key}\n")
+    if not args.quiet_key:
+        print("Paste this connection key into the extension once:")
+        print(f"\n{key}\n")
     print(
         "Bella uses two inference threads and unloads after three idle minutes. Control-C stops the reader.\n"
     )
-    uvicorn.run(
-        create_app(settings, key=key), host="127.0.0.1", port=settings.port, access_log=False
-    )
+    try:
+        with backend_lock(settings):
+            uvicorn.run(
+                create_app(settings, key=key),
+                host="127.0.0.1",
+                port=settings.port,
+                access_log=False,
+            )
+    except RuntimeError as error:
+        parser.exit(1, f"Speechify: {error}\n")
 
 
 if __name__ == "__main__":

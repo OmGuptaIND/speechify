@@ -14,9 +14,14 @@ dependencies = [
 speechify-backend = "speechify_backend.app:main"
 speechify-download = "speechify_backend.download:main"
 speechify-read = "speechify_backend.cli:entrypoint"
+speechify-control = "speechify_backend.control:main"
 
 [dependency-groups]
 dev = ["httpx>=0.28,<1", "pytest>=8,<10", "ruff>=0.14,<1"]
+packaging = [
+    "certifi>=2025.1",
+    "pyinstaller>=6.16,<7",
+]
 
 [build-system]
 requires = ["hatchling"]

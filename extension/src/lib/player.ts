@@ -8,6 +8,7 @@ export interface PlayerState {
   phase: Phase;
   word?: WordTiming;
   error?: string;
+  elapsed?: number;
 }
 export class ReaderPlayer {
   state: PlayerState = { index: 0, phase: 'ready' };
@@ -20,6 +21,7 @@ export class ReaderPlayer {
   private frame = 0;
   private objectURL = '';
   private lastWord = -1;
+  private shownSecond = -1;
   constructor(
     prefs: Preferences,
     private notify: (state: PlayerState) => void,
@@ -123,7 +125,15 @@ export class ReaderPlayer {
       if (index + 1 < this.article.segments.length) void this.request(index + 1).catch(() => {});
     } catch (error) {
       if (epoch === this.epoch && !this.abort.signal.aborted)
-        this.fail(error instanceof Error ? error.message : 'The local reader is not available.');
+        this.fail(
+          error instanceof DOMException && error.name === 'NotAllowedError'
+            ? 'Press Play in the reader to allow audio on this page.'
+            : error instanceof TypeError
+              ? 'Open Speechify on your Mac, then press Play again.'
+              : error instanceof Error
+                ? error.message
+                : 'The local reader is not available.',
+        );
     }
   }
   private currentData?: Speech;
@@ -134,6 +144,7 @@ export class ReaderPlayer {
       if (epoch !== this.epoch || this.audio.paused) return;
       const at = this.audio.currentTime;
       const wordIndex = data.words.findIndex((w) => w.start <= at && w.end > at);
+      let changed = false;
       if (wordIndex !== this.lastWord && wordIndex >= 0) {
         this.lastWord = wordIndex;
         this.state.word = data.words[wordIndex];
@@ -146,8 +157,15 @@ export class ReaderPlayer {
             focus: this.prefs.focus,
           })
           .catch(() => {});
-        this.emit();
+        changed = true;
       }
+      const second = Math.floor(at);
+      if (second !== this.shownSecond) {
+        this.shownSecond = second;
+        this.state.elapsed = at;
+        changed = true;
+      }
+      if (changed) this.emit();
       this.frame = requestAnimationFrame(tick);
     };
     tick();
@@ -165,6 +183,9 @@ export class ReaderPlayer {
       this.currentData = undefined;
     }
     this.state.phase = 'paused';
+    this.state.elapsed = Number.isFinite(this.audio.currentTime)
+      ? this.audio.currentTime
+      : this.state.elapsed;
     this.emit();
     if (this.article) void platform.remember(this.article, this.state.index);
   }
@@ -181,7 +202,8 @@ export class ReaderPlayer {
     this.objectURL = '';
     this.currentData = undefined;
     if (clear) void platform.clear(this.article);
-    this.state = { index: this.state.index, phase: 'ready' };
+    this.shownSecond = -1;
+    this.state = { index: this.state.index, phase: 'ready', elapsed: 0 };
     this.emit();
   }
   seek(index: number) {

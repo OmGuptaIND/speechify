@@ -1,15 +1,308 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Speechify — local Bella reader (Python backend + Chrome extension + Mac app)
+#
+# Rule of thumb: source, lockfiles, docs and small launcher scripts are tracked.
+# Models, audio, keys, caches, dependencies and build output are not.
+# Local runtime data belongs in .data/ and is never committed.
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ── Local runtime data ───────────────────────────────────────────────────────
+# Models, generated audio, pairing key, locks, logs, screenshots, frozen runtime,
+# PyInstaller work dirs, Swift scratch, release DMGs/ZIPs, smoke-test evidence.
 .data/
-.venv/
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.ruff_cache/
-*.egg-info/
-node_modules/
-dist/
-.test/
-coverage/
+# Convenience symlink at the repo root pointing into .data/standalone.
+/Speechify.app
+# Any other stray app bundle produced by a build.
+*.app/
+
+# ── Secrets and connection keys ──────────────────────────────────────────────
+# The backend pairing key is .data/backend.key; these catch copies elsewhere.
+*.key
+*.pem
+*.p12
+*.pfx
+*.cer
+*.crt
+*.der
+*.keychain*
+*.mobileprovision
+*.provisionprofile
 .env
 .env.*
 !.env.example
+secrets/
+*.secret
+*.secrets.*
+
+# ── Voice models and audio ───────────────────────────────────────────────────
+# Kokoro ONNX weights and voice packs are downloaded by `speechify-download`,
+# verified by SHA-256, and must never be committed.
+*.onnx
+*.onnx.data
+*.ort
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+*.gguf
+*.npz
+voices-*.bin
+kokoro-*.bin
+models/
+# Generated or captured audio.
+*.wav
+*.mp3
+*.m4a
+*.aac
+*.ogg
+*.oga
+*.opus
+*.flac
+*.aiff
+*.aif
+*.caf
+
+# ── Python (backend/, managed with uv) ───────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+ENV/
+env/
+.Python
+*.egg
+*.egg-info/
+.eggs/
+.installed.cfg
+pip-wheel-metadata/
+# Build / dist (note: extension dist is handled in the Node section).
+build/
+backend/dist/
+backend/build/
+sdist/
+wheels/
+share/python-wheels/
+MANIFEST
+# Tooling caches.
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyre/
+.pytype/
+.pyright/
+.hypothesis/
+.cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+nosetests.xml
+*.cover
+*.py,cover
+# Notebooks / profiling.
+.ipynb_checkpoints/
+*.prof
+*.lprof
+# uv keeps its own cache outside the repo; nothing to ignore here.
+# Keep backend/.python-version and backend/uv.lock tracked.
+
+# ── PyInstaller (frozen reader helper for the Mac app) ───────────────────────
+# Work and dist paths are redirected into .data/ by scripts/build-macos.command,
+# but ignore defaults in case someone runs pyinstaller by hand.
+# scripts/freeze-service.spec is hand-written and IS tracked — do not add *.spec.
+*.manifest
+*.pyz
+warn-*.txt
+xref-*.html
+Analysis-*.toc
+EXE-*.toc
+PYZ-*.toc
+PKG-*.toc
+COLLECT-*.toc
+BUNDLE-*.toc
+
+# ── Node / TypeScript (extension/) ───────────────────────────────────────────
+node_modules/
+jspm_packages/
+.npm/
+.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
+.pnpm-store/
+# Lockfiles from other package managers (npm's package-lock.json is tracked).
+yarn.lock
+pnpm-lock.yaml
+bun.lockb
+bun.lock
+# esbuild output: unpacked extension builds and the portable variant.
+dist/
+dist-*/
+# Packaged extension bundles and source maps.
+*.zip
+*.crx
+*.pem.pub
+*.map
+# Test / typecheck / tool caches.
+.test/
+coverage/
+.nyc_output/
+*.tsbuildinfo
+.eslintcache
+.stylelintcache
+.prettiercache
+.parcel-cache/
+.turbo/
+.vite/
+.rollup.cache/
+.esbuild/
+# Debug logs.
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+.pnpm-debug.log*
+
+# ── Swift / SwiftPM / Xcode (macos/) ─────────────────────────────────────────
+# Scratch path is redirected to .data/swift-build; keep defaults too.
+.build/
+.swiftpm/
+*.xcodeproj/
+*.xcworkspace/
+!default.xcworkspace
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+*.moved-aside
+DerivedData/
+*.hmap
+*.ipa
+*.dSYM
+*.dSYM.zip
+*.xcresult/
+Playgrounds/
+timeline.xctimeline
+playground.xcworkspace
+.swiftlint-cache/
+# App icon rendering intermediates (normally under .data/macos-icon).
+*.iconset/
+*.icns
+
+# ── Release artifacts ────────────────────────────────────────────────────────
+*.dmg
+*.pkg
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.rar
+
+# ── Logs, locks and temp files ───────────────────────────────────────────────
+*.log
+logs/
+*.lock
+!uv.lock
+!package-lock.json
+!Package.resolved
+*.pid
+*.seed
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+*.swp
+*.swo
+*~
+.tmp/
+tmp/
+temp/
+
+# ── macOS ────────────────────────────────────────────────────────────────────
 .DS_Store
+.AppleDouble
+.LSOverride
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+# (Finder custom-icon files "Icon\r" are intentionally not listed: the usual
+# "Icon?" pattern also matches the tracked extension/public/icons/ folder on
+# case-insensitive macOS checkouts.)
+
+# ── Windows / Linux (for contributors on other systems) ──────────────────────
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+.directory
+.Trash-*
+.nfs*
+
+# ── Editors and IDEs ─────────────────────────────────────────────────────────
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+*.iml
+*.sublime-project
+*.sublime-workspace
+.fleet/
+.zed/
+.history/
+.ionide/
+*.code-workspace
+.vim/
+Session.vim
+.netrwhist
+.tags
+tags
+TAGS
+.projectile
+
+# ── AI assistant and agent scratch ───────────────────────────────────────────
+# AGENTS.md is tracked project guidance; local tool state is not.
+.claude/*
+!.claude/settings.json
+.cursor/
+.codex/
+.aider*
+.continue/
+*.local.md
+
+# ── Browser / acceptance-test leftovers ──────────────────────────────────────
+# Automated browser profiles, screenshots and recordings from manual checks.
+.playwright/
+playwright-report/
+test-results/
+screenshots/
+*.webm
+*.mov
+*.mp4
+*.gif
+# Guard: the extension icons are tracked even if an image rule is added above.
+!extension/public/icons/*.png

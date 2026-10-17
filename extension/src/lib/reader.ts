@@ -1,5 +1,6 @@
 import type { Article, HighlightRequest, Segment } from '../shared';
 import { splitParagraph } from './segments';
+import type { ReadingTarget } from './targets';
 
 interface Piece {
   node: Text;
@@ -18,18 +19,29 @@ type HighlightAPI = typeof globalThis & {
 const EXCLUDE =
   'script,style,noscript,nav,footer,button,input,textarea,select,svg,canvas,[contenteditable="true"],[aria-hidden="true"],[data-speechify-ui]';
 
-export function createReader(doc: Document, seek: (id: string) => void, root?: Element) {
+interface Navigation {
+  targetAt: (element: Element) => ReadingTarget | undefined;
+  read: (targetId: string, startSegment: string) => void;
+}
+
+export function createReader(
+  doc: Document,
+  seek: (id: string) => void,
+  root?: Element,
+  navigation?: Navigation,
+) {
   let paragraphs: Paragraph[] = [];
   let segments: Segment[] = [];
   let active = false;
+  let enabled = false;
   let lastParagraph = -1;
   const style = doc.createElement('style');
   style.textContent =
-    '::highlight(speechify-sentence){background:rgba(109,96,220,.22)}::highlight(speechify-word){background:#6b5ddd;color:#fff}html[data-speechify-dim] [data-speechify-paragraph]:not([data-speechify-current]){opacity:.38}';
+    '::highlight(speechify-hover){background:rgba(139,128,187,.16)}[data-speechify-hover]{cursor:pointer}::highlight(speechify-sentence){background:rgba(109,96,220,.22)}::highlight(speechify-word){background:#6b5ddd;color:#fff}html[data-speechify-dim] [data-speechify-paragraph]:not([data-speechify-current]):not([data-speechify-hover]){opacity:.38}';
   doc.head.append(style);
   const registry = (CSS as unknown as { highlights?: Map<string, unknown> }).highlights;
 
-  function collect(selection = false): Article {
+  function collect(selection = false, target?: ReadingTarget): Article {
     clear();
     const selected =
       selection && doc.getSelection()?.rangeCount
@@ -37,17 +49,40 @@ export function createReader(doc: Document, seek: (id: string) => void, root?: E
         : null;
     if (selection && (!selected || selected.collapsed))
       throw new Error('Select some article text first.');
-    const area = root || doc.querySelector('main,[role="main"],article') || doc.body;
-    let blocks = Array.from(area.querySelectorAll('[data-testid="tweetText"]'));
-    if (!blocks.length) blocks = Array.from(area.querySelectorAll('p,h1,h2,h3,h4,li,blockquote'));
-    blocks = blocks.filter(
-      (el) => !el.closest(EXCLUDE) && !el.querySelector('p,h1,h2,h3,h4,li,blockquote'),
-    );
-    if (!blocks.length) blocks = [area];
-    paragraphs = [];
+    const areas = target?.roots || [
+      root || doc.querySelector('article,main,[role="main"]') || doc.body,
+    ];
+    ({ paragraphs, segments } = map(areas, selected));
+    enabled = true;
+    paragraphs.forEach((p) => p.element.setAttribute('data-speechify-paragraph', ''));
+    if (!segments.length) throw new Error('No readable text was found. Try selecting a passage.');
+    return {
+      title:
+        target?.title || doc.querySelector('h1')?.textContent?.trim() || doc.title || 'This page',
+      url: target?.url || doc.location.href,
+      targetId: target?.id,
+      kind: target?.kind,
+      segments,
+    };
+  }
+
+  function map(areas: Element[], selected: Range | null = null) {
+    const selector = 'p,h1,h2,h3,h4,li,blockquote';
+    const blocks = [
+      ...new Set(
+        areas.flatMap((area) => {
+          if (area.matches('[data-testid="tweetText"]')) return [area];
+          let found = Array.from(area.querySelectorAll('[data-testid="tweetText"]'));
+          if (!found.length) found = Array.from(area.querySelectorAll(selector));
+          found = found.filter((el) => !el.closest(EXCLUDE) && !el.querySelector(selector));
+          return found.length ? found : [area];
+        }),
+      ),
+    ];
+    const paragraphs: Paragraph[] = [];
     let total = 0;
     let heading: string | undefined;
-    segments = [];
+    const segments: Segment[] = [];
     for (const element of blocks) {
       if (!element.getClientRects().length || element.closest('[hidden]')) continue;
       const computed = getComputedStyle(element);
@@ -70,16 +105,10 @@ export function createReader(doc: Document, seek: (id: string) => void, root?: E
       const paragraph = paragraphs.length;
       if (/^H[1-4]$/.test(element.tagName)) heading = text.trim();
       paragraphs.push({ element, pieces, text });
-      element.setAttribute('data-speechify-paragraph', '');
       segments.push(...splitParagraph(text, paragraph, heading));
       total += text.length;
     }
-    if (!segments.length) throw new Error('No readable text was found. Try selecting a passage.');
-    return {
-      title: doc.querySelector('h1')?.textContent?.trim() || doc.title || 'This page',
-      url: doc.location.href,
-      segments,
-    };
+    return { paragraphs, segments };
   }
 
   function range(paragraph: Paragraph, start: number, end: number) {
@@ -110,7 +139,11 @@ export function createReader(doc: Document, seek: (id: string) => void, root?: E
       request.segment.start + request.start,
       request.segment.start + request.end,
     );
-    if (sentence) registry.set('speechify-sentence', new Highlight(sentence));
+    if (sentence) {
+      const h = new Highlight(sentence);
+      h.priority = 1;
+      registry.set('speechify-sentence', h);
+    }
     if (word) {
       const h = new Highlight(word);
       h.priority = 2;
@@ -132,6 +165,7 @@ export function createReader(doc: Document, seek: (id: string) => void, root?: E
   }
 
   function clear() {
+    clearHover();
     registry?.delete('speechify-sentence');
     registry?.delete('speechify-word');
     doc.documentElement.removeAttribute('data-speechify-dim');
@@ -143,21 +177,158 @@ export function createReader(doc: Document, seek: (id: string) => void, root?: E
     lastParagraph = -1;
   }
 
-  doc.addEventListener('click', (event) => {
-    if (!active || (event.target as Element).closest('a,button,input,select,[data-speechify-ui]'))
+  // Hover is a navigation preview only. It never requests audio or moves playback.
+  const INTERACTIVE =
+    'a,button,input,select,textarea,[role="button"],[role="link"],[contenteditable]:not([contenteditable="false"]),[data-speechify-ui]';
+  type Candidate = { paragraph: Paragraph; segment: Segment; targetId?: string };
+  let hovered: Candidate | undefined;
+  let pointerFrame = 0;
+  let other:
+    | { target: ReadingTarget; text: string; paragraphs: Paragraph[]; segments: Segment[] }
+    | undefined;
+
+  function clearHover() {
+    cancelAnimationFrame(pointerFrame);
+    hoverObserver.disconnect();
+    pointerFrame = 0;
+    registry?.delete('speechify-hover');
+    hovered?.paragraph.element.removeAttribute('data-speechify-hover');
+    hovered = undefined;
+  }
+  const hoverObserver = new MutationObserver(clearHover);
+  function intact(paragraph: Paragraph) {
+    return (
+      paragraph.element.isConnected &&
+      paragraph.pieces.every(
+        (piece) =>
+          piece.node.isConnected &&
+          piece.node.data.slice(piece.offset, piece.offset + piece.to - piece.from) ===
+            paragraph.text.slice(piece.from, piece.to),
+      )
+    );
+  }
+  function candidate(event: MouseEvent): Candidate | undefined {
+    const element = event.target instanceof Element ? event.target : null;
+    if (
+      !enabled ||
+      !element ||
+      element.closest(INTERACTIVE) ||
+      event.buttons ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.altKey ||
+      event.shiftKey ||
+      !doc.getSelection()?.isCollapsed
+    )
       return;
-    const caret = doc.caretRangeFromPoint(event.clientX, event.clientY);
+    const caret = doc.caretRangeFromPoint?.(event.clientX, event.clientY);
     if (!caret) return;
-    for (let i = 0; i < paragraphs.length; i++) {
-      const piece = paragraphs[i].pieces.find((p) => p.node === caret.startContainer);
-      if (!piece) continue;
-      const offset = piece.from + caret.startOffset - piece.offset;
-      const segment = segments.find(
-        (s) => s.paragraph === i && s.start <= offset && s.end >= offset,
-      );
-      if (segment) seek(segment.id);
-      break;
-    }
+    const locate = (items: Paragraph[], chunks: Segment[], targetId?: string) => {
+      for (let i = 0; i < items.length; i++) {
+        const p = items[i];
+        if (!p.element.contains(element) || !intact(p)) continue;
+        const piece = p.pieces.find((part) => part.node === caret.startContainer);
+        if (!piece) continue;
+        const offset = piece.from + caret.startOffset - piece.offset;
+        const segment = chunks.find(
+          (s) => s.paragraph === i && s.start <= offset && s.end > offset,
+        );
+        if (segment) return { paragraph: p, segment, targetId };
+      }
+    };
+    const current = locate(paragraphs, segments);
+    if (current) return current;
+    const target = navigation?.targetAt(element);
+    if (!target) return;
+    const text = target.roots.map((r) => r.textContent).join('');
+    if (
+      !other ||
+      other.target.id !== target.id ||
+      other.text !== text ||
+      !other.paragraphs.every(intact)
+    )
+      other = { target, text, ...map(target.roots) };
+    return locate(other.paragraphs, other.segments, target.id);
+  }
+  function preview(event: PointerEvent) {
+    clearHover();
+    const next = candidate(event);
+    const Highlight = (globalThis as HighlightAPI).Highlight;
+    if (!next || !registry || !Highlight) return;
+    // Match the highlighted destination to the start of the clicked sentence.
+    const r = range(next.paragraph, next.segment.sentenceStart, next.segment.sentenceEnd);
+    if (!r) return;
+    const h = new Highlight(r);
+    h.priority = 0;
+    registry.set('speechify-hover', h);
+    next.paragraph.element.setAttribute('data-speechify-hover', '');
+    hovered = next;
+    hoverObserver.observe(next.paragraph.element, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+    });
+  }
+  doc.addEventListener(
+    'pointermove',
+    (event) => {
+      cancelAnimationFrame(pointerFrame);
+      if (enabled) pointerFrame = requestAnimationFrame(() => preview(event));
+    },
+    { passive: true },
+  );
+  doc.addEventListener(
+    'pointerout',
+    (event) => {
+      if (
+        !event.relatedTarget ||
+        !(event.relatedTarget instanceof Element) ||
+        !hovered?.paragraph.element.contains(event.relatedTarget)
+      )
+        clearHover();
+    },
+    { passive: true },
+  );
+  doc.addEventListener('scroll', clearHover, { passive: true, capture: true });
+  doc.addEventListener('selectionchange', () => {
+    if (!doc.getSelection()?.isCollapsed) clearHover();
   });
-  return { collect, highlight, clear };
+  doc.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') clearHover();
+  });
+  doc.addEventListener(
+    'click',
+    (event) => {
+      if (event.defaultPrevented || event.button !== 0) return;
+      const next = candidate(event);
+      if (!next) return;
+      event.preventDefault();
+      event.stopPropagation();
+      clearHover();
+      const start = `${next.segment.paragraph}:${next.segment.sentenceStart}`;
+      // A sentence can have leading whitespace or multiple bounded audio chunks.
+      const chunks = next.targetId ? other!.segments : segments;
+      const first = chunks.find(
+        (s) =>
+          s.paragraph === next.segment.paragraph && s.sentenceStart === next.segment.sentenceStart,
+      );
+      const id = first?.id || start;
+      if (next.targetId) navigation?.read(next.targetId, id);
+      else seek(id);
+    },
+    true,
+  );
+  return {
+    collect,
+    highlight,
+    clear,
+    enable() {
+      enabled = true;
+    },
+    deactivate() {
+      enabled = false;
+      clear();
+      other = undefined;
+    },
+  };
 }

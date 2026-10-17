@@ -1,4 +1,12 @@
 export type Voice = 'af_bella' | 'af_heart' | 'af_nicole';
+export interface ReaderRequest {
+  tabId: number;
+  windowId: number;
+  selection: boolean;
+  targetId?: string;
+  autoplay?: boolean;
+  startSegment?: string;
+}
 export interface Segment {
   id: string;
   paragraph: number;
@@ -14,6 +22,8 @@ export interface Article {
   url: string;
   segments: Segment[];
   tabId?: number;
+  targetId?: string;
+  kind?: 'article' | 'post' | 'comment' | 'feed';
 }
 export interface HighlightRequest {
   segment: Segment;

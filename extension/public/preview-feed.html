@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Speechify · Reading preview</title>
+    <link rel="stylesheet" href="preview.css" />
+  </head>
+  <body class="preview-page">
+    <div class="preview-browser">
+      <span>Reading preview</span><span>Speechify · Local Reader</span>
+    </div>
+    <div class="preview-workspace">
+      <main id="sample-article" class="sample-article">
+        <h1 style="font-size: 26px; letter-spacing: -0.6px; margin-bottom: 24px">Notes</h1>
+        <article data-testid="tweet" style="border-block: 1px solid #8883; padding: 24px 0">
+          <small>Alex Chen · A moment ago</small>
+          <div data-testid="tweetText">
+            <p>
+              The city library has extended its weekday hours. Visitors can use the
+              <strong>reading rooms</strong> until nine in the evening.
+            </p>
+          </div>
+          <small>Reply &nbsp; · &nbsp; Repost &nbsp; · &nbsp; Like</small>
+        </article>
+        <article class="feed-shared-item" style="padding: 24px 0">
+          <small>Jamie Rivers · A reading note</small>
+          <div class="comment-body">
+            <p>
+              I keep a short list of books to return to. Some are marked with notes from years ago.
+            </p>
+            <p>Reading the same passage later, I often notice something I missed the first time.</p>
+          </div>
+          <small>Like &nbsp; · &nbsp; Comment &nbsp; · &nbsp; Share</small>
+        </article>
+      </main>
+      <aside id="root" class="preview-panel"></aside>
+    </div>
+    <script src="preview.js"></script>
+  </body>
+</html>
