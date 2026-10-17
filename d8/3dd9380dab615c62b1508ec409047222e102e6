@@ -1,0 +1,24 @@
+backend/src/speechify_backend/service.py
+  s_47b01e984accc2::t_bd5c45a56a3f39 6,25-27
+backend/src/speechify_backend/worker.py
+  s_47b01e984accc2::t_bd5c45a56a3f39 6,15-17
+  s_47b01e984accc2::t_b33f404b70496a 18-19
+docs/validation.md
+  s_47b01e984accc2::t_e2ed0f8554afd6 23-24
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d83dd9380dab615c62b1508ec409047222e102e6",
+  "prompts": {},
+  "sessions": {
+    "s_47b01e984accc2": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a147ab-ab30-7c93-b091-64894b9bcb51",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "Om Gupta <omgupta0720@gmail.com>"
+    }
+  }
+}
